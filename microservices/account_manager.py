@@ -147,6 +147,68 @@ class AccountManager:
             dest_path.unlink(missing_ok=True)
             return None
 
+    async def add_account_from_data(self, account_data: Dict) -> Optional[str]:
+        """
+        Добавляет аккаунт в БД на основе данных сессии от phone_auth_service
+        """
+        try:
+            session_name = account_data['session_name']
+            session_path = Path("sessions") / f"{session_name}.session"
+            
+            # Проверяем что файл сессии существует
+            if not session_path.exists():
+                raise ValueError(f"Файл сессии не найден: {session_path}")
+            
+            # Парсим прокси если есть
+            proxy_data = None
+            if account_data.get('proxy'):
+                try:
+                    proxy_data = json.loads(account_data['proxy'])
+                except json.JSONDecodeError:
+                    logger.warning("Ошибка парсинга прокси, используем без прокси")
+            
+            # Создаем и тестируем клиент
+            proxy_tup = self._build_proxy(proxy_data) if proxy_data else None
+            client = TelegramClient(str(session_path), self.api_id, self.api_hash, proxy=proxy_tup)
+            
+            try:
+                await client.connect()
+                if not await client.is_user_authorized():
+                    raise RuntimeError("Сессия не авторизована")
+                
+                # Получаем информацию о пользователе для проверки
+                me = await client.get_me()
+                
+                # Добавляем в БД
+                new_id = await self.account_db.add_telegram_account(
+                    session_name=session_name,
+                    api_id=self.api_id,
+                    api_hash=self.api_hash,
+                    account_id=account_data['account_id'],
+                    phone_number=account_data['phone_number'],
+                    name=account_data['name'],
+                    is_active=account_data.get('is_active', True),
+                    proxy=account_data.get('proxy')
+                )
+                
+                # Добавляем клиент в активные
+                self.clients[session_name] = client
+                
+                logger.success(f"Аккаунт {session_name} (ID в БД {new_id}) успешно добавлен")
+                return session_name
+                
+            except Exception as e:
+                await client.disconnect()
+                raise e
+                
+        except Exception as e:
+            logger.error(f"Ошибка при добавлении аккаунта из данных: {e}")
+            # Удаляем файл сессии если произошла ошибка
+            session_path = Path("sessions") / f"{account_data.get('session_name', '')}.session"
+            if session_path.exists():
+                session_path.unlink(missing_ok=True)
+            raise ValueError(f"Не удалось добавить аккаунт: {str(e)}")
+
     async def update_account_proxy(self, session_name: str, proxy: dict | None) -> bool:
         updated = await self.account_db.update_account_proxy_by_session(session_name, proxy)
         if not updated:
