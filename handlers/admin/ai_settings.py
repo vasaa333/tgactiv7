@@ -15,6 +15,23 @@ from loguru import logger
 import json
 import traceback
 
+# Вспомогательная функция для универсального отображения меню
+async def send_or_edit_message(obj, text: str, reply_markup=None):
+    """Универсальная функция для отправки или редактирования сообщения"""
+    if isinstance(obj, CallbackQuery):
+        await obj.message.edit_text(text, reply_markup=reply_markup)
+    elif isinstance(obj, Message):
+        await obj.answer(text, reply_markup=reply_markup)
+    else:
+        # Пытаемся универсальный подход для любых других типов
+        try:
+            await obj.message.edit_text(text, reply_markup=reply_markup)
+        except (AttributeError, TypeError):
+            try:
+                await obj.answer(text, reply_markup=reply_markup)
+            except (AttributeError, TypeError):
+                logger.error(f"Не удалось отправить сообщение для объекта типа {type(obj)}")
+
 @adminRouter.message(F.text == '🤖 ИИ настройки')
 async def ai_settings_handler(msg: Message, state: FSM):
     """Главное меню настроек ИИ с улучшенной обработкой ошибок"""
@@ -64,10 +81,17 @@ async def ai_settings_handler(msg: Message, state: FSM):
             [InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_admin")]
         ])
         
-        if hasattr(msg, 'edit_text'):
-            await msg.edit_text(text, reply_markup=kb)
-        else:
+        # Используем правильный метод в зависимости от типа объекта
+        if isinstance(msg, CallbackQuery):
+            await msg.message.edit_text(text, reply_markup=kb)
+        elif isinstance(msg, Message):
             await msg.answer(text, reply_markup=kb)
+        else:
+            # Для любых других случаев пробуем оба варианта
+            try:
+                await msg.edit_text(text, reply_markup=kb)
+            except (AttributeError, TypeError):
+                await msg.answer(text, reply_markup=kb)
             
     except Exception as e:
         logger.error(f"Ошибка в ai_settings_handler: {e}")
@@ -116,7 +140,7 @@ async def test_ai_api_handler(call: CallbackQuery, state: FSM):
         )
 
 @adminRouter.callback_query(F.data == "interval_settings")
-async def interval_settings_menu(call: CallbackQuery, state: FSM):
+async def interval_settings_menu(call_or_msg, state: FSM):
     """Меню настроек интервалов с обработкой ошибок"""
     try:
         settings = await db.get_settings()
@@ -145,11 +169,25 @@ async def interval_settings_menu(call: CallbackQuery, state: FSM):
             [InlineKeyboardButton(text="🔄 Сбросить к умолчанию", callback_data="reset_intervals")],
             [InlineKeyboardButton(text="↩️ К ИИ настройкам", callback_data="back_to_ai_settings")]
         ])
-        await call.message.edit_text(text, reply_markup=kb)
+        
+        # Обработка разных типов объектов
+        if isinstance(call_or_msg, CallbackQuery):
+            await call_or_msg.message.edit_text(text, reply_markup=kb)
+        elif isinstance(call_or_msg, Message):
+            await call_or_msg.answer(text, reply_markup=kb)
+        else:
+            # Пробуем универсальный подход
+            try:
+                await call_or_msg.message.edit_text(text, reply_markup=kb)
+            except (AttributeError, TypeError):
+                await call_or_msg.answer(text, reply_markup=kb)
         
     except Exception as e:
         logger.error(f"Ошибка в interval_settings_menu: {e}")
-        await call.answer("❌ Ошибка загрузки настроек интервалов", show_alert=True)
+        if isinstance(call_or_msg, CallbackQuery):
+            await call_or_msg.answer("❌ Ошибка загрузки настроек интервалов", show_alert=True)
+        else:
+            await call_or_msg.answer("❌ Ошибка загрузки настроек интервалов")
 
 @adminRouter.callback_query(F.data == "reset_intervals")
 async def reset_intervals_handler(call: CallbackQuery, state: FSM):
@@ -547,7 +585,7 @@ async def set_ai_provider(call: CallbackQuery, state: FSM):
         await call.answer("❌ Ошибка при установке провайдера", show_alert=True)
 
 @adminRouter.callback_query(F.data == "manage_api_keys")
-async def manage_api_keys_menu(call: CallbackQuery, state: FSM):
+async def manage_api_keys_menu(call_or_msg, state: FSM):
     """Меню управления API ключами"""
     try:
         settings = await db.get_settings()
@@ -578,11 +616,16 @@ async def manage_api_keys_menu(call: CallbackQuery, state: FSM):
             [InlineKeyboardButton(text="🗑 Удалить все ключи", callback_data="clear_all_keys")],
             [InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_ai_settings")]
         ])
-        await call.message.edit_text(text, reply_markup=kb)
+        
+        # Используем универсальную функцию для отправки/редактирования
+        await send_or_edit_message(call_or_msg, text, kb)
         
     except Exception as e:
         logger.error(f"Ошибка в manage_api_keys_menu: {e}")
-        await call.answer("❌ Ошибка загрузки API ключей", show_alert=True)
+        if isinstance(call_or_msg, CallbackQuery):
+            await call_or_msg.answer("❌ Ошибка загрузки API ключей", show_alert=True)
+        else:
+            await call_or_msg.answer("❌ Ошибка загрузки API ключей")
 
 @adminRouter.callback_query(F.data == "clear_all_keys")
 async def clear_all_keys_confirm(call: CallbackQuery, state: FSM):
